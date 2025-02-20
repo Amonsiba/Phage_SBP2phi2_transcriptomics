@@ -1,0 +1,120 @@
+---
+title: "Samtools_Coverage_Analysis"
+author: "Alisha Monsibais"
+date: "2024-11-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+```
+
+
+## Project Summary
+This analysis is to determine the coverage of bacteria vs phage per sample. Samtools was conducted in HPC3 and the resulting txt files are downloaded: 1 set is mapped to the bacteria, 1 set is mapped to Phage SBP2phi2. The purpose of this is to show the burst of reads based on the one step growth curve to reflect the phage replication stragety.
+
+```{r importing docs - bacteria}
+bacteria_df <- read.csv("coverage_summary_bacteria.csv") %>%
+  mutate(Condition = "Bacteria")
+
+phage_df <- read.csv("coverage_summary_phage_terminase_adjusted.csv")%>%
+  mutate(Condition = "Phage")
+
+
+# Merge the bacteria and phage data frames and calculates percentages
+coverage_df <- merge(bacteria_df, phage_df, by = "Sample", suffixes = c("_Bacteria", "_Phage")) %>%
+  select(Sample, Number_of_Reads_Bacteria, Number_of_Reads_Phage) %>%
+  mutate(Total_Reads = Number_of_Reads_Bacteria+Number_of_Reads_Phage) %>%
+  mutate(PercentagePhageReads = (Number_of_Reads_Phage/Total_Reads)*100) %>%
+  mutate(PercentageBacteriaReads = (Number_of_Reads_Bacteria/Total_Reads)*100) 
+
+#Cleans dataframe for time
+
+coverage_df_clean <- coverage_df %>%
+  select(Sample, PercentageBacteriaReads, PercentagePhageReads) %>%
+  mutate(Time = str_extract(Sample, "t\\d+")) %>%
+    mutate(Time_minutes = case_when(
+    Time == "t0" ~ 0,
+    Time == "t10" ~ 10,
+    Time == "t40" ~ 40,
+    Time == "t70" ~ 70,
+    Time == "t110" ~ 110,
+    TRUE ~ NA_real_  # Handling any other times if they exist
+  )) %>%
+  # Reorder the rows by the numeric Time_minutes column
+  arrange(Time_minutes) %>%
+  mutate(
+    Condition = case_when(
+      str_detect(Sample, "^B28B") ~ "Bacterial Control",  # Matches 'B28B' at the start of Sample
+      str_detect(Sample, "^Ph") ~ "Phage SBP2Φ2 exposed",  # Matches 'Ph' at the start of Sample
+      TRUE ~ "Other"  # For any other cases not matching the above
+    )
+  ) %>%
+   mutate(
+    Replicate = str_extract(Sample, "rep[0-9]+")  # Extracts the 'rep1', 'rep2', etc. from the Sample name
+  )
+
+
+#Calculates Averages and varience for visualization purposes
+summary_df <- coverage_df_clean %>%
+  group_by(Condition, Time_minutes) %>%
+  summarize(
+    avg_bacteria_reads = mean(PercentageBacteriaReads, na.rm = TRUE),
+    sd_bacteria_reads = sd(PercentageBacteriaReads, na.rm = TRUE),
+    avg_phage_reads = mean(PercentagePhageReads, na.rm = TRUE),
+    sd_phage_reads = sd(PercentagePhageReads, na.rm = TRUE),
+    .groups = "drop"  # To ungroup after summarization
+  )
+
+```
+
+
+```{r data visualization }
+
+
+coverageplot <- ggplot(summary_df, aes(x = Time_minutes)) + 
+  # Bacterial Control (black)
+  geom_line(aes(y = avg_bacteria_reads, color = "% Bacteria"), size = 1) +
+  geom_point(aes(y = avg_bacteria_reads, color = "% Bacterial"), size = 3) +
+  geom_errorbar(aes(
+    ymin = avg_bacteria_reads - sd_bacteria_reads, 
+    ymax = avg_bacteria_reads + sd_bacteria_reads
+  ), width = 10, color = "black") + # Error bars for Bacterial Control
+  # Phage SBP2phi2 exposed (pink color)
+  geom_line(aes(y = avg_phage_reads, color = "% Phage"), size = 1) +
+  geom_point(aes(y = avg_phage_reads, color = "% Phage"), size = 3) +
+  geom_errorbar(aes(
+    ymin = avg_phage_reads - sd_phage_reads, 
+    ymax = avg_phage_reads + sd_phage_reads
+  ), width = 10, color = "#B7167E") + # Error bars for Phage Exposed
+  # Custom colors
+  scale_color_manual(values = c("% Bacterial" = "black", "% Phage" = "#B7167E")) +
+  # Add labels
+  labs(
+    x = "Time (minutes)",
+    y = "Percentage (%)",
+    color = "Read Coverage"
+  ) +
+  theme_linedraw() +
+ theme(
+    legend.position = "bottom",                      # Position legend at the bottom
+    plot.title = element_text(hjust = 0.5, face = "bold"),  # Center the title
+    panel.grid.minor = element_blank(),              # Remove minor grid lines
+    strip.text = element_text(size = 16, face = "bold")  # Increase facet title font size
+  ) +
+  facet_grid(~Condition)
+
+ggsave("Supp_Fig_4.pdf", plot = coverageplot, width = 10, height = 5, dpi = 300)
+ggsave("Supp_Fig_4.png", plot = coverageplot, width = 10, height = 5, dpi = 300)
+
+
+```
+
