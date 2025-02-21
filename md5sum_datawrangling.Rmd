@@ -1,0 +1,63 @@
+---
+title: "md5sum_check"
+author: "Alisha Monsibais"
+date: "8/20/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("readxl")  # Install if not already installed
+library(readxl)
+library(tidyr)
+```
+
+## R Markdown
+
+This r doc is for data wrangling md5sum information to ensure downloading accuracy. 
+
+```{r md5sum files}
+
+HPC3_data <- read.csv("240820_md5sumfile.txt", header = FALSE)
+Seqcenter_data <- read_excel("RNA Sequencing Stats.xlsx")
+
+```
+
+```{r HPC3 data wrangling}
+
+HPC3_data_tidy <- HPC3_data %>% 
+    separate(V1, into = c("HPC3_md5sum", "filepath"), sep = "  ") %>%#output has two whitespaces :/
+    separate(filepath, into = c("1", "2", "3", "4", "5", "6", "7", "File"), sep = "/") %>%
+     select("File", "HPC3_md5sum") %>%
+    mutate(Sample_name = str_remove(File, "_S\\d+_R\\d_\\d{3}\\.fastq\\.gz")) %>%
+    mutate(read = str_extract(File, "_R\\d") %>%
+           str_remove("_")) %>%
+    mutate(Sample = str_c(Sample_name, read, sep = "_")) %>%
+    select(Sample, HPC3_md5sum)
+
+```
+
+
+```{r Seqcenter data wrangling}
+Seqcenter_data_tidy <- Seqcenter_data %>%
+  select("Sample Name", "R1 md5sum", "R2 md5sum") %>%
+  pivot_longer(
+    cols = starts_with("R"),    # Columns to pivot (read1_info and read2_info)
+    values_to = "SeqCenter_md5sum"             # Name of the new column for the information
+  ) %>% rename(
+    "Sample_name" = "Sample Name"   # Rename old_name2 to new_name2
+  ) %>%  separate(name, into = c("read", "1"), sep = " ") %>%
+  mutate(Sample = str_c(Sample_name, read, sep = "_")) %>%
+    select(Sample, SeqCenter_md5sum)
+
+```
+
+```{r Merging and checking the md5sum}
+# Merge dataframes by 'sample_name'
+merged_df <- merge(HPC3_data_tidy, Seqcenter_data_tidy, by = "Sample") %>%
+   mutate(match = HPC3_md5sum == SeqCenter_md5sum)
+
+write.csv(merged_df, file = "md5sum_qualitycheck.csv", row.names = FALSE)
+
+```
+
