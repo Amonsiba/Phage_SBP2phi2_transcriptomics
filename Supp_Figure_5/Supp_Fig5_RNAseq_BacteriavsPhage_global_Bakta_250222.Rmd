@@ -1,0 +1,410 @@
+---
+title: "RNASeq Analysis of Bacteria B28B infected by Phage SBP2phi2 - Raw Count, DESeq2 and Enrichment analysis"
+author: "Alisha Monsibais"
+date: "2024-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Supplemental Figure 5 - global FDR correction 
+
+## Project Summary 
+Online documentation on project:
+https://docs.google.com/presentation/d/1KE5qg0QTPJgwDhP95Hefhn3OoLmeRQx9rLEfFUiybwE/edit#slide=id.p
+
+Project: B28B was grown to log phase 0.3 and then phage SBP2@2 was added at an MOI of 10. Timepoints were collected at time 0, 10, 40, 70, 110 mins. This was ran in duplication with B28B. RNA stability reagent (Qiagen) was used to process the pellet and RNA extraction (Qiagen - Mini) was used with the DNAse I digest from Invitrogen. AccuBlue and Tape Station was ran for quality control. Samples were overnighted on dry ice to SeqCenter for lib prep and sequencing.
+
+Updated: 2/3/25 with Enrichment analysis code (1/20/25) and Bakta annotations (2/3/25)
+
+```{r loading libraries}
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggrepel)
+library(patchwork)
+library(ggplot2)
+library("tidyverse")
+library("DOSE")
+library("clusterProfiler")
+library("enrichplot")
+
+```
+
+
+```{r loading in data}
+#loading count data aligned to bacteria trycycler genome 
+counts_bacteria <- read.delim("../Figure5_and_Supp_Figure6/bacteria_counts_Bakta.txt", skip = 1,sep ="", header =TRUE)
+
+#cleaned data with headers for geneid and sample names (column names)
+count_data <-  counts_bacteria %>%
+  rename_with(~ gsub("(_rep\\d+).*", "\\1", .), starts_with("B28B") | starts_with("Ph")) %>%
+  dplyr::select(-Start, -End, -Chr, -Strand, -Length) %>%
+  column_to_rownames("Geneid")
+  
+
+#Metadata - samples with detail of samples 
+meta_data <- read.csv(file = '../Figure5_and_Supp_Figure6/230223_Metadata.csv', sep = ',', header = TRUE) %>%
+    mutate(
+    Timepoint = as.factor(Timepoint), 
+    Condition = as.factor(Condition)
+  )
+
+#remakes the Locustag as the rownames 
+rownames(meta_data) <- meta_data$Sample
+
+#removed the Locustag column
+head(meta_data)
+
+#match function - the row names of the metadata is the vector in the order that we want, so this will be the first argument, while the column names of the count or rpkm data is the vector to be reordered, which is the second argument 
+genomic_idx <- match(rownames(meta_data), colnames(count_data))
+genomic_idx
+#genomic_idx represents how to re-order the column in our counts data to be identical to the row names in metadata
+
+# Reorder the counts data frame to have the sample names in the same order as the metadata data frame
+counts_ordered  <- count_data[ , genomic_idx]
+
+#The rows of the metadata must exactly match the columns of the counts data, count data was reformed with match function
+all(colnames(counts_ordered) == rownames(meta_data))
+#Should come back TRUE
+
+#This dataset has 4,438 (Seq Center analysis with Prokka annotation was 4,205 genes) genes, a typical free living bacteria could have a range of 1,500–7,500 genes according to the 'bacteria genome' wiki page. Thus, the RNAseq dataset makes biological sense
+
+glimpse(meta_data)
+
+```
+
+## Setting Model and Result() function
+
+```{r dds model and result extraction}
+#Set Up Pairwise Comparisons for Each Timepoint
+#DESeq() fits the model and estimates parameters but does not directly output corrected p-values.
+dds <- DESeqDataSetFromMatrix(countData = counts_ordered, colData = meta_data, design = ~ Timepoint + Condition + Timepoint:Condition)
+dds <- DESeq(dds)
+
+#extract the dds names
+resultsNames(dds)
+results_table <- results(dds)
+write.csv(as.data.frame(results_table), "250203_DEG_Bakta_results.csv")
+
+#extract results for each time point 
+#results() function - calculates the p-values and adjusts for multiple testing using the Benjamini-Hochberg procedure.
+res_0 <- results(dds, name = "Condition_Phage_vs_Bacteria")
+res_10 <- results(dds, name = "Timepoint10.ConditionPhage")
+res_40 <- results(dds, name = "Timepoint40.ConditionPhage")
+res_70 <- results(dds, name = "Timepoint70.ConditionPhage")
+res_110 <- results(dds, name = "Timepoint110.ConditionPhage")
+
+```
+
+```{r annotation DEGs}
+# Load gene description file
+gene2description  <- read.delim("../Figure5_and_Supp_Figure6/B28B.trycycler.bakta.tsv", skip = 5, header = TRUE, sep = "\t") %>% select(Locus.Tag, Gene, Product, DbXrefs)
+
+#will only work in baseR :/
+colnames(gene2description)[colnames(gene2description) == "Locus.Tag"] <- "gene_id"
+
+
+res_0_annotated <- as.data.frame(res_0) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "DEGs_t0.csv", res_0_annotated)
+
+res_10_annotated <- as.data.frame(res_10) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "DEGs_t10.csv", res_10_annotated)
+
+res_40_annotated <- as.data.frame(res_40) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "DEGs_t40.csv", res_40_annotated)
+
+res_70_annotated <- as.data.frame(res_70) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "DEGs_t70.csv", res_70_annotated)
+
+res_110_annotated <- as.data.frame(res_110) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "DEGs_t110.csv", res_110_annotated)
+
+```
+
+
+```{r Volcano Plot Visualization}
+# Count upregulated and downregulated genes
+num_upregulated_t0 <- sum(res_0_annotated$padj < 0.05 & res_0_annotated$log2FoldChange > 1, na.rm = TRUE)
+num_downregulated_t0 <- sum(res_0_annotated$padj < 0.05 & res_0_annotated$log2FoldChange < -1, na.rm = TRUE)
+
+# Annotate the plot with a boxed label
+plot_0 <- ggplot(res_0_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_0_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(res_0_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red2", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(res_0_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 250,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_t0, 
+      "\nDownregulated: ", num_downregulated_t0
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-11, 11), ylim = c(-2, 250))
+
+print(plot_0)
+
+
+####################### timepoint 10 ##################################
+# Count upregulated and downregulated genes
+num_upregulated_t10 <- sum(res_10_annotated$padj < 0.05 & res_10_annotated$log2FoldChange > 1, na.rm = TRUE)
+num_downregulated_t10 <- sum(res_10_annotated$padj < 0.05 & res_10_annotated$log2FoldChange < -1, na.rm = TRUE)
+
+# Annotate the plot with a boxed label
+plot_10 <- ggplot(res_10_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_10_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(res_10_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red2", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(res_10_annotated, -log10(padj) > 5),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 100,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 250,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_t10, 
+      "\nDownregulated: ", num_downregulated_t10
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-11, 11), ylim = c(-2, 250))
+
+print(plot_10)
+
+############################### time point 40 ###############################
+# Count upregulated and downregulated genes
+num_upregulated_t40 <- sum(res_40_annotated$padj < 0.05 & res_40_annotated$log2FoldChange > 1, na.rm = TRUE)
+num_downregulated_t40 <- sum(res_40_annotated$padj < 0.05 & res_40_annotated$log2FoldChange < -1, na.rm = TRUE)
+
+# Annotate the plot with a boxed label
+plot_40 <- ggplot(res_40_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_40_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(res_40_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red2", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(res_40_annotated, -log10(padj) > 25),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 50,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 250,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_t40, 
+      "\nDownregulated: ", num_downregulated_t40
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-11, 11), ylim = c(-2, 250))
+
+print(plot_40)
+
+############################### time point 70 ################################
+# Count upregulated and downregulated genes
+num_upregulated_t70 <- sum(res_70_annotated$padj < 0.05 & res_70_annotated$log2FoldChange > 1, na.rm = TRUE)
+num_downregulated_t70 <- sum(res_70_annotated$padj < 0.05 & res_70_annotated$log2FoldChange < -1, na.rm = TRUE)
+
+# Annotate the plot with a boxed label
+plot_70 <- ggplot(res_70_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_70_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(res_70_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red2", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(res_70_annotated, -log10(padj) > 25),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 50,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 250,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_t70, 
+      "\nDownregulated: ", num_downregulated_t70
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-11, 11), ylim = c(-2, 250))
+
+print(plot_70)
+
+############################ time point 110 ###################################
+# Count upregulated and downregulated genes
+num_upregulated_t110 <- sum(res_110_annotated$padj < 0.05 & res_110_annotated$log2FoldChange > 1, na.rm = TRUE)
+num_downregulated_t110 <- sum(res_110_annotated$padj < 0.05 & res_110_annotated$log2FoldChange < -1, na.rm = TRUE)
+
+# Annotate the plot with a boxed label
+plot_110 <- ggplot(res_110_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_110_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(res_110_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red2", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(res_110_annotated, -log10(padj) > 25),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 50,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 250,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_t110, 
+      "\nDownregulated: ", num_downregulated_t110
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-11, 11), ylim = c(-2, 250))
+
+print(plot_110)
+
+
+final_plot <- plot_0 + plot_10 + plot_40 + 
+              plot_70 + plot_110 + plot_layout(guides = "collect", ncol = 2) +
+              plot_annotation(tag_levels = 'A')
+ggsave("Supp_Fig5_BacteriavsPhage_globalmodel_bakta_product.png", plot = final_plot, width = 8.5, height = 11, dpi = 300)
+
+ggsave("Supp_Fig5_BacteriavsPhage_globalmodel_bakta_product.pdf", plot = final_plot, width = 8.5, height = 11, dpi = 300)
+
+```
+
