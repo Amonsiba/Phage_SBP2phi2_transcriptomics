@@ -1,0 +1,604 @@
+---
+title: "RNASeq Analysis of Bacteria B28B infected by Phage SBP2phi2 - Raw Count and DESeq2"
+author: "Alisha Monsibais"
+date: "2025-2-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project Summary 
+Online documentation on project:
+https://docs.google.com/presentation/d/1KE5qg0QTPJgwDhP95Hefhn3OoLmeRQx9rLEfFUiybwE/edit#slide=id.p
+
+Project: B28B was grown to log phase 0.3 and then phage SBP2@2 was added at an MOI of 10. Timepoints were collected at time 0, 10, 40, 70, 110 mins. This was ran in duplication with B28B. RNA stability reagent (Qiagen) was used to process the pellet and RNA extraction (Qiagen - Mini) was used with the DNAse I digest from Invitrogen. AccuBlue and Tape Station was ran for quality control. Samples were overnighted on dry ice to SeqCenter for lib prep and sequencing.
+
+Updated 2/19/25 - with Bakta annatations 
+Global figure for Figure 5 - Phage Condition and Supp Figure 6 - Bacteria control 
+also maded together just incase
+
+```{r loading libraries}
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggrepel)
+library(patchwork)
+```
+
+
+```{r loading in data}
+#loading count data aligned to bacteria trycycler genome 
+count_phage <- read.delim("bacteria_counts_Bakta.txt", skip = 1,sep ="", header =TRUE)
+
+#cleaned data with headers for geneid and sample names (column names)
+count_data <-  count_phage %>%
+  mutate(Geneid = sub(".*(peg\\.\\d+)", "\\1", Geneid)) %>%
+  rename_with(~ gsub("(_rep\\d+).*", "\\1", .), starts_with("B28B") | starts_with("Ph")) %>%
+  select(-Start, -End, -Chr, -Strand, -Length) %>%
+  column_to_rownames("Geneid")
+
+
+#Metadata - samples with detail of samples 
+meta_data <- read.csv(file = '230223_Metadata.csv', sep = ',', header = TRUE) %>%
+    mutate(
+    Timepoint = as.factor(Timepoint), 
+    Condition = as.factor(Condition)
+  )
+#remakes the Locustag as the rownames 
+rownames(meta_data) <- meta_data$Sample
+
+
+#removed the Locustag column
+head(meta_data)
+
+#match function - the row names of the metadata is the vector in the order that we want, so this will be the first argument, while the column names of the count or rpkm data is the vector to be reordered, which is the second argument 
+genomic_idx <- match(rownames(meta_data), colnames(count_data))
+genomic_idx
+#genomic_idx represents how to re-order the column in our counts data to be identical to the row names in metadata
+
+# Reorder the counts data frame to have the sample names in the same order as the metadata data frame
+counts_ordered  <- count_data[ , genomic_idx]
+
+#The rows of the metadata must exactly match the columns of the counts data, count data was reformed with match function
+all(colnames(counts_ordered) == rownames(meta_data))
+#Should come back TRUE
+
+#This dataset has 4,438 (Seq Center analysis with Prokka annotation was 4,205 genes) genes, a typical free living bacteria could have a range of 1,500–7,500 genes according to the 'bacteria genome' wiki page. Thus, the RNAseq dataset makes biological sense
+
+glimpse(meta_data)
+
+
+
+```
+
+## Normalization of Count Data
+This is to account for differences in sequencing depth and gene length, making counts comparable across samples.
+
+```{r dds model and result extraction}
+#Set Up Pairwise Comparisons for Each Timepoint
+#DESeq() fits the model and estimates parameters but does not directly output corrected p-values.
+dds <- DESeqDataSetFromMatrix(countData = counts_ordered, colData = meta_data, design = ~ Timepoint + Condition + Timepoint:Condition)
+dds <- DESeq(dds)
+
+#extract the dds names
+resultsNames(dds)
+
+#results() function - calculates the p-values and adjusts for multiple testing using the Benjamini-Hochberg procedure.
+
+#bacteria through time 
+results_bacteria_10 <- results(dds, name = "Timepoint_10_vs_0")
+results_bacteria_40 <- results(dds, name = "Timepoint_40_vs_0")
+results_bacteria_70 <- results(dds, name = "Timepoint_70_vs_0")
+results_bacteria_110 <- results(dds, name = "Timepoint_110_vs_0")
+
+#phage through time
+results_phage_10 <- results(dds, name = "Timepoint10.ConditionPhage")
+results_phage_40 <- results(dds, name = "Timepoint40.ConditionPhage")
+results_phage_70 <- results(dds, name = "Timepoint70.ConditionPhage")
+results_phage_110 <- results(dds, name = "Timepoint110.ConditionPhage")
+
+```
+
+```{r bacteria annotation DEGs}
+# Load gene description file
+
+gene2description  <- read.delim("B28B.trycycler.bakta.tsv", skip = 5, header = TRUE, sep = "\t") %>% select(Locus.Tag, Gene, Product, DbXrefs)
+
+#will only work in baseR :/
+colnames(gene2description)[colnames(gene2description) == "Locus.Tag"] <- "gene_id"
+
+
+results_bacteria_10_annotated <- as.data.frame(results_bacteria_10) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Bacteria_DEGs_t0_10.csv", results_bacteria_10_annotated)
+
+
+
+results_bacteria_40_annotated <- as.data.frame(results_bacteria_40) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Bacteria_DEGs_t0_40.csv", results_bacteria_40_annotated)
+
+
+results_bacteria_70_annotated <- as.data.frame(results_bacteria_70) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Bacteria_DEGs_t0_70.csv", results_bacteria_70_annotated)
+
+
+results_bacteria_110_annotated <- as.data.frame(results_bacteria_110) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Bacteria_DEGs_t0_110.csv", results_bacteria_110_annotated)
+
+
+
+
+
+
+
+```
+
+```{r Phage annotation DEGs}
+
+results_phage_10_annotated <- as.data.frame(results_phage_10) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Phage_DEGs_t0_10.csv", results_phage_10_annotated)
+
+results_phage_40_annotated <- as.data.frame(results_phage_40) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Phage_DEGs_t0_40.csv", results_phage_40_annotated)
+
+results_phage_70_annotated <- as.data.frame(results_phage_70) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Phage_DEGs_t0_70.csv", results_phage_70_annotated)
+
+results_phage_110_annotated <- as.data.frame(results_phage_110) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  ))
+write.csv(file = "Phage_DEGs_t0_110.csv", results_phage_110_annotated)
+
+
+
+
+```
+
+
+
+```{r Volcano Plot Visualization - bacteria}
+# Count upregulated and downregulated genes
+num_upregulated_bacteria_t10 <- results_bacteria_10_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_bacteria_t10 <- results_bacteria_10_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_bacteria_t40 <- results_bacteria_40_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_bacteria_t40 <- results_bacteria_40_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_bacteria_t70 <- results_bacteria_70_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_bacteria_t70 <- results_bacteria_70_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_bacteria_t110 <- results_bacteria_110_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_bacteria_t110 <- results_bacteria_110_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+
+# Annotate the plot with a boxed label
+plot_10 <- ggplot(results_bacteria_10_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_bacteria_10_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_bacteria_10_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "black", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_bacteria_10_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 50,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_bacteria_t10, 
+      "\nDownregulated: ", num_downregulated_bacteria_t10
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-5, 5), ylim = c(-2, 50))
+
+print(plot_10)
+
+plot_40 <- ggplot(results_bacteria_40_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_bacteria_40_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_bacteria_40_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "black", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_bacteria_40_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 50,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_bacteria_t40, 
+      "\nDownregulated: ", num_downregulated_bacteria_t40
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-5, 5), ylim = c(-2, 50))
+
+print(plot_40)
+
+
+plot_70 <- ggplot(results_bacteria_70_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_bacteria_70_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_bacteria_70_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "black", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_bacteria_70_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 50,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_bacteria_t70, 
+      "\nDownregulated: ", num_downregulated_bacteria_t70
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-5, 5), ylim = c(-2, 50))
+
+print(plot_70)
+
+
+plot_110 <- ggplot(results_bacteria_110_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_bacteria_110_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_bacteria_110_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "black", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_bacteria_110_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 50,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_bacteria_t110, 
+      "\nDownregulated: ", num_downregulated_bacteria_t110
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-5, 5), ylim = c(-2, 50))
+
+print(plot_110)
+
+final_plot <- plot_10 + plot_40 + 
+              plot_70 + plot_110 + plot_layout(guides = "collect", ncol = 2) +
+              plot_annotation(tag_levels = 'A')
+ggsave("SuppFig5_bacteria_completeglobalcorrection.png", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+ggsave("Supp_Fig5_bacteria_completeglobalcorrection.pdf", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+
+
+```
+
+
+```{r Volcano Plot Visualization - phage}
+
+# Count upregulated and downregulated genes
+num_upregulated_phage_t10 <- results_phage_10_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_phage_t10 <- results_phage_10_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_phage_t40 <- results_phage_40_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_phage_t40 <- results_phage_40_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_phage_t70 <- results_phage_70_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_phage_t70 <- results_phage_70_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+num_upregulated_phage_t110 <- results_phage_110_annotated %>% filter(Regulation == "Upregulated") %>% nrow()
+num_downregulated_phage_t110 <- results_phage_110_annotated %>% filter(Regulation == "Downregulated") %>% nrow()
+
+# Annotate the plot with a boxed label
+phage_plot_10 <- ggplot(results_phage_10_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_phage_10_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_phage_10_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "forestgreen", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_phage_10_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 275,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_phage_t10, 
+      "\nDownregulated: ", num_downregulated_phage_t10
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-10, 10), ylim = c(-2, 275))
+
+print(phage_plot_10)
+
+phage_plot_40 <- ggplot(results_phage_40_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_phage_40_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_phage_40_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "forestgreen", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_phage_40_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 275,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_phage_t40, 
+      "\nDownregulated: ", num_downregulated_phage_t40
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-10, 10), ylim = c(-2, 275))
+
+print(phage_plot_40)
+
+
+phage_plot_70 <- ggplot(results_phage_70_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_phage_70_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_phage_70_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "forestgreen", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_phage_70_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 275,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_phage_t70, 
+      "\nDownregulated: ", num_downregulated_phage_t70
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-10, 10), ylim = c(-2, 275))
+
+print(phage_plot_70)
+
+
+phage_plot_110 <- ggplot(results_phage_110_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(results_phage_110_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +
+  geom_point(data = subset(results_phage_110_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "forestgreen", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = subset(results_phage_110_annotated, -log10(padj) > 1),
+    aes(label = Gene),
+    size = 3,
+    box.padding = 0.3,
+    point.padding = 0.3,
+    max.overlaps = 75,
+    segment.color = 'grey50',
+    segment.size = 0.5
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  annotate(
+    "label",
+    x = 0, y = 275,  # Adjust coordinates based on your plot
+    label = paste0(
+      "Upregulated: ", num_upregulated_phage_t110, 
+      "\nDownregulated: ", num_downregulated_phage_t110
+    ),
+    fill = "white",
+    size = 3,
+    fontface = "bold",
+    color = "black",
+    hjust = 1,
+    vjust = 1
+  ) + coord_cartesian(xlim = c(-10, 10), ylim = c(-2, 275))
+
+print(phage_plot_110)
+
+
+final_plot <- phage_plot_10 + phage_plot_40 + 
+              phage_plot_70 + phage_plot_110 + plot_layout(guides = "collect", ncol = 2) +
+              plot_annotation(tag_levels = 'A')
+ggsave("Fig5_phagetreated_completeglobalcorrection.png", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+ggsave("Fig5_phagetreated_completeglobalcorrection.pdf", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+
+
+```
+
+
