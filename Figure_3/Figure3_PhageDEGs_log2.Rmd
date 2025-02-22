@@ -1,0 +1,658 @@
+---
+title: "RNASeq Analysis of Bacteria B28B infected by Phage SBP2phi2 - Raw Count and DESeq2"
+author: "Alisha Monsibais"
+date: "2024-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#based on file: Figure5_RNAseq_Phage_TP_defaulted0
+```
+
+## Project Summary 
+Online documentation on project:
+https://docs.google.com/presentation/d/1KE5qg0QTPJgwDhP95Hefhn3OoLmeRQx9rLEfFUiybwE/edit#slide=id.p
+
+Project: B28B was grown to log phase 0.3 and then phage SBP2@2 was added at an MOI of 10. Timepoints were collected at time 0, 10, 40, 70, 110 mins. This was ran in duplication with B28B. RNA stability reagent (Qiagen) was used to process the pellet and RNA extraction (Qiagen - Mini) was used with the DNAse I digest from Invitrogen. AccuBlue and Tape Station was ran for quality control. Samples were overnighted on dry ice to SeqCenter for lib prep and sequencing.
+
+Figure 3 - Phage DEGs through time tracking the DEGs - only looking at phage condition (multiple correction n=5)
+
+```{r loading libraries}
+library(DESeq2)
+library(pheatmap)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggrepel)
+library(patchwork)
+library(scales)
+```
+
+
+```{r loading in data}
+#loading count data aligned to bacteria trycycler genome 
+count_phage <- read.delim("phage_terminase_adjusted_counts.txt", skip = 1,sep ="", header =TRUE)
+
+#cleaned data with headers for geneid and sample names (column names)
+count_data <-  count_phage %>%
+  mutate(Geneid = sub(".*_(CDS_\\d+)", "\\1", Geneid)) %>%
+  rename_with(~ gsub("(_rep\\d+).*", "\\1", .), starts_with("B28B") | starts_with("Ph")) %>%
+  select(-Start, -End, -Chr, -Strand, -Length) %>%
+  select(Geneid, starts_with("Ph")) %>%
+  column_to_rownames("Geneid")
+
+#Metadata - samples with detail of samples 
+meta_data <- read.csv(file = '230223_Metadata.csv', sep = ',', header = TRUE) %>%
+   filter(Condition == "Phage") %>%
+  mutate(
+    Timepoint = as.factor(Timepoint), 
+    Condition = as.factor(Condition)
+  )
+#Filters only phage condition and changes df into factor for Deseq
+
+#remakes the Locustag as the rownames 
+rownames(meta_data) <- meta_data$Sample
+
+#removed the Locustag column
+head(meta_data)
+
+#match function - the row names of the metadata is the vector in the order that we want, so this will be the first argument, while the column names of the count or rpkm data is the vector to be reordered, which is the second argument 
+genomic_idx <- match(rownames(meta_data), colnames(count_data))
+genomic_idx
+#genomic_idx represents how to re-order the column in our counts data to be identical to the row names in metadata
+
+# Reorder the counts data frame to have the sample names in the same order as the metadata data frame
+counts_ordered  <- count_data[ , genomic_idx]
+
+#The rows of the metadata must exactly match the columns of the counts data, count data was reformed with match function
+all(colnames(counts_ordered) == rownames(meta_data))
+#Should come back TRUE
+
+#This dataset has 4,438 (Seq Center analysis with Prokka annotation was 4,205 genes) genes, a typical free living bacteria could have a range of 1,500–7,500 genes according to the 'bacteria genome' wiki page. Thus, the RNAseq dataset makes biological sense
+
+glimpse(meta_data)
+
+```
+
+## Building the dds model and track DEGs through time
+
+```{r dds model and result extraction}
+# Load gene description file
+gene2description <- read.csv("gene2description_phage_reordered.csv", header = FALSE, sep =",", 
+                               col.names = c("feature_type", "gene_id", "long_name", "short_name", "funct", "PHROG")) %>%
+   mutate(gene_id = sub(".*_(CDS_\\d+)", "\\1", gene_id)) %>%
+   select(gene_id, short_name, funct, PHROG)
+
+#Set Up Pairwise Comparisons for Each Timepoint
+#DESeq() fits the model and estimates parameters but does not directly output corrected p-values.
+# Create DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = counts_ordered, colData = meta_data, design = ~ Timepoint)
+dds <- DESeq(dds)
+res <- results(dds)
+resultsNames(dds)
+
+# 2. Extract DEGs (filter by padj < 0.05)
+degs <- rownames(res[res$padj < 0.05 & !is.na(res$padj), ])
+
+# 3. Extract normalized counts for all genes
+norm_counts <- counts(dds, normalized = TRUE) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "gene_id")
+
+# 4. List the hypothetical proteins and gives them a unique ID
+corrected_g2d <- gene2description %>%
+ mutate(
+    name_unique = ifelse(
+      short_name == "hypothetical protein",
+      paste0(short_name, " ", cumsum(short_name == "hypothetical protein")),  # Creates a sequential number for hypothetical proteins
+      short_name
+    )
+  )
+
+# 5a. Filter non DEGS with normalized counts
+nondeg_counts <- norm_counts %>%
+  filter(!gene_id %in% degs) %>%  # Use the inverse of the condition to select non-DEGs
+  ungroup() %>% left_join(corrected_g2d, by = "gene_id")
+  
+# 4. Filter DEGs with normalized counts 
+deg_counts <- norm_counts %>%
+  filter(gene_id %in% degs) %>%
+  ungroup() %>% left_join(corrected_g2d, by = "gene_id") # Ungroup after mutate to alinedraw any issues during pivoting
+
+# Reshape Data to Long Format and add metadata for time information, then average replicates
+deg_counts_long <- deg_counts %>%
+  select(gene_id, everything()) %>%
+  pivot_longer(cols = starts_with("Ph_t"), names_to = "Sample", values_to = "Expression") %>%
+  left_join(meta_data, by = "Sample") %>%
+  # Group by gene_id and Timepoint and calculate the mean expression for each timepoint
+  group_by(gene_id, Timepoint) %>%
+  summarise(Average_Expression = mean(Expression, na.rm = TRUE), .groups = 'drop') %>%
+  left_join(corrected_g2d, by = "gene_id") %>%
+  mutate(Avg_log = log2(Average_Expression))
+
+# Reshape Data to Long Format and add metadata for time information, then average replicates
+nondeg_counts_long <- nondeg_counts %>%
+  select(gene_id, everything()) %>%
+  pivot_longer(cols = starts_with("Ph_t"), names_to = "Sample", values_to = "Expression") %>%
+  left_join(meta_data, by = "Sample") %>%
+  # Group by gene_id and Timepoint and calculate the mean expression for each timepoint
+  group_by(gene_id, Timepoint) %>%
+  summarise(Average_Expression = mean(Expression, na.rm = TRUE), .groups = 'drop') %>%
+  left_join(corrected_g2d, by = "gene_id") %>%
+  mutate(Avg_log = log2(Average_Expression))
+  
+```
+
+# Splitting up the Functional Groups to enhance the understanding of the figure 
+```{r Filters for Figure}
+library(ggpubr)
+# This section is to filter the deg_count_long into groups based on the Phold function (funct in df). This will include multiple grous 
+#1. Differential Expressed Genes 
+  #- unknown function group 1 
+  #- unknown function group 2
+  #- head and packaging
+  #- DNA%2C RNA and nucleotide metabolism
+  #- connector
+  #- tail
+  #- moron%2C auxiliary metabolic gene and host takeover
+  #- transcription regulation
+  #- other
+  #- lysis
+#2. Non Differential Expressed Genes 
+  #- DNA%2C RNA and nucleotide metabolism
+  #- unknown function 
+  #- other
+  #- head and packaging 
+
+group_unknown1 <- deg_counts_long %>%
+  filter(name_unique %in% paste0("hypothetical protein ", 1:18)) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = name_unique)) +
+  geom_line(color = "navyblue") +
+  geom_point(size = 3, color = "navyblue") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  scale_shape_manual(values = 1:17) +  # Limit the number of shapes used
+  theme_bw() +
+  theme(
+    legend.position = "right",
+     legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Hypothetical Proteins - Group 1",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LHP1.pdf", plot = group_unknown1, width = 8, height = 4, dpi = 300)
+
+
+group_unknown2 <- deg_counts_long %>%
+  filter(name_unique %in% paste0("hypothetical protein ", 19:41)) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = name_unique)) +
+  geom_line(color = "blue3") +
+  geom_point(size = 3, color = "blue3") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  scale_shape_manual(values = 1:17) +  # Limit the number of shapes used
+  theme_bw() +
+  theme(
+    legend.position = "right",
+     legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Hypothetical Proteins - Group 2",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LHP2.pdf", plot = group_unknown2, width = 8, height = 4, dpi = 300)
+
+group_unknown3 <- deg_counts_long %>%
+  filter(name_unique %in% paste0("hypothetical protein ", 42:61)) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = name_unique)) +
+  geom_line(color = "royalblue") +
+  geom_point(size = 3, color = "royalblue") +  # Adjust the point size if needed
+  scale_y_continuous(
+ limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  scale_shape_manual(values = 1:22) +  # Limit the number of shapes used
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Hypothetical Proteins - Group 3",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LHP3.pdf", plot = group_unknown3, width = 8, height = 4, dpi = 300)
+
+group_unknown4 <- deg_counts_long %>%
+  filter(name_unique %in% paste0("hypothetical protein ", 62:122)) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = name_unique)) +
+  geom_line(color = "skyblue2") +
+  geom_point(size = 3, color = "skyblue2") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  scale_shape_manual(values = 1:22) +  # Limit the number of shapes used
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Hypothetical Proteins - Group 4",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LHP4.pdf", plot = group_unknown4, width = 8, height = 4, dpi = 300)
+
+group_head <- deg_counts_long %>%
+  filter(funct == "head and packaging") %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "maroon2") +
+  geom_point(size = 3, color = "maroon2") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2.0e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Head and Packaging",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LHeadandPackaging.pdf", plot = group_head, width = 8, height = 4, dpi = 300)
+
+group_tail <- deg_counts_long %>%
+  filter(funct == "tail")%>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "green4") +
+  geom_point(size = 3, color = "green4") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2.0e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+     legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Tail",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/Ltail.pdf", plot = group_tail, width = 8, height = 4, dpi = 300)
+
+group_genome <- deg_counts_long %>%
+  filter(funct %in% c("DNA%2C RNA and nucleotide metabolism", "transcription regulation", "other")) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG, fill = name_unique)) +
+  geom_line(color = "darkorange2") +
+  geom_point(size = 3, color = "darkorange2") +  # Adjust the point size if needed
+  scale_shape_manual(values = 1:14) +
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+      legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Genome and Gene Expression",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LGenome.pdf", plot = group_genome, width = 8, height = 4, dpi = 300)
+
+
+group_connector <- deg_counts_long %>%
+  filter(funct == c("connector")) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "purple3") +
+  geom_point(size = 3, color = "purple3") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Connector",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LConnector.pdf", plot = group_connector, width = 8, height = 4, dpi = 300)
+
+
+group_takeover <- deg_counts_long %>%
+  filter(funct %in% c("moron%2C auxiliary metabolic gene and host takeover", "lysis")) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "red") +
+  geom_point(size = 3, color = "red") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Host Takeover and Lysis",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LTakeover.pdf", plot = group_takeover, width = 8, height = 4, dpi = 300)
+
+
+group_non_other <- nondeg_counts_long %>%
+  filter(funct %in% c("head and packaging", "other", "DNA%2C RNA and nucleotide metabolism")) %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "azure4") +
+  geom_point(size = 3, color = "azure4") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+      legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Non Differentially Expressed Genes",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LnonDEGs.pdf", plot = group_non_other, width = 8, height = 4, dpi = 300)
+
+group_non_unknown <- nondeg_counts_long %>%
+  filter(funct == "unknown function") %>%
+  ggplot(aes(x = Timepoint, y = Avg_log, shape = name_unique, group = PHROG)) +
+  geom_line(color = "azure4") +
+  geom_point(size = 3, color = "azure4") +  # Adjust the point size if needed
+  scale_y_continuous(
+  limits = c(0, 2e1),  # Set the y-axis limit to 1 million
+  labels = scientific_format()  # Format y-axis labels in scientific notation
+  ) +
+  theme_bw() +
+  scale_shape_manual(values = 1:14) +  # Limit the number of shapes used
+  theme(
+    legend.position = "right",
+      legend.background = element_rect(color = "black", size = 1), 
+    plot.title = element_text(color = "black", face = "bold", hjust = 0.5, size = 14)) + 
+  labs(
+    title = "Non Differentially Expressed Hypothetical Proteins",
+    x = "Time (minutes)",
+    y = "Log2 Normalized Expression"
+  )
+ggsave("individual_figures/LnonDEGs_hp.pdf", plot = group_non_unknown, width = 8, height = 4, dpi = 300)
+
+```
+
+```{r}
+# Assuming all plots are stored as variables, e.g., group_non_unknown, group_non_other, etc.
+library(patchwork)
+
+final_plot <- (
+  group_takeover | group_genome | group_head | 
+  group_tail | group_connector | group_non_other 
+) + 
+  plot_layout(ncol = 2, nrow = 3, guides = "collect") +  # Adjust layout
+  plot_annotation(tag_levels = "A")  # Auto-labels A, B, C, etc.
+
+# To make the layout fit a specific page size (8x11 inches)
+ggsave("individual_figures/combined_plots.pdf", plot = final_plot, width = 12, height = 10, dpi = 300, device = "pdf")
+
+```
+
+
+
+
+
+
+## Annotating the DDS dataframes - volcano plots
+
+```{r annotation DEGs}
+
+#only compares timepoints to "0" - will have to manually compare them then apply the FDR correction to the dataset after
+
+#Time point 0 vs 10 (Time point 0 is default)
+res_0_10 <- results(dds, name = "Timepoint_10_vs_0")
+
+#Time point 0 vs 40 
+res_0_40 <- results(dds, name = "Timepoint_40_vs_0")
+
+#Time point 0 vs 70 
+res_0_70 <- results(dds, name = "Timepoint_70_vs_0")
+
+#Time point 0 vs 110 
+res_0_110 <- results(dds, name = "Timepoint_110_vs_0")
+
+# Load gene description file
+gene2description <- read.csv("gene2description_phage_reordered.csv", header = FALSE, sep =",", 
+                               col.names = c("feature_type", "gene_id", "long_name", "short_name", "funct", "PHROG")) %>%
+   mutate(gene_id = sub(".*_(CDS_\\d+)", "\\1", gene_id)) %>%
+   select(gene_id, short_name, funct, PHROG)
+
+res_0_10_annotated <- as.data.frame(res_0_10) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   group_by(short_name) %>%                    # Group by gene descriptions
+  mutate(
+    name_unique = ifelse(               # Add numbering to duplicates
+      short_name == "hypothetical protein",
+      paste0(short_name, " ", row_number()),  # Append numbers: 1, 2, 3, etc.
+      short_name
+    )
+  ) %>%
+  ungroup() %>%
+    mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  )) %>% filter(!is.na(log2FoldChange) & !is.na(padj))
+
+res_0_40_annotated <- as.data.frame(res_0_40) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   group_by(short_name) %>%                    # Group by gene short_names
+  mutate(
+    name_unique = ifelse(               # Add numbering to duplicates
+      short_name == "hypothetical protein",
+      paste0(short_name, " ", row_number()),  # Append numbers: 1, 2, 3, etc.
+      short_name
+    )
+  ) %>%
+  ungroup() %>%
+    mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  )) %>% filter(!is.na(log2FoldChange) & !is.na(padj))
+
+res_0_70_annotated <- as.data.frame(res_0_70) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   group_by(short_name) %>%                    # Group by gene short_names
+  mutate(
+    name_unique = ifelse(               # Add numbering to duplicates
+      short_name == "hypothetical protein",
+      paste0(short_name, " ", row_number()),  # Append numbers: 1, 2, 3, etc.
+      short_name
+    )
+  ) %>%
+  ungroup() %>%
+    mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  )) %>% filter(!is.na(log2FoldChange) & !is.na(padj))
+
+res_0_110_annotated <- as.data.frame(res_0_110) %>%
+  rownames_to_column(var = "gene_id") %>%
+  left_join(gene2description, by = "gene_id") %>%
+   group_by(short_name) %>%                    # Group by gene short_names
+  mutate(
+    name_unique = ifelse(               # Add numbering to duplicates
+      short_name == "hypothetical protein",
+      paste0(short_name, " ", row_number()),  # Append numbers: 1, 2, 3, etc.
+      short_name
+    )
+  ) %>%
+  ungroup() %>%
+    mutate(Regulation = case_when(
+    padj < 0.05 & log2FoldChange > 1 ~ "Upregulated",
+    padj < 0.05 & log2FoldChange < -1 ~ "Downregulated",
+    TRUE ~ "Not Significant"
+  )) %>% filter(!is.na(log2FoldChange) & !is.na(padj))
+
+
+
+```
+
+## Visualization with Volcano Plots
+```{r Volcano Plot Visualization}
+
+plot_0_10 <- ggplot(res_0_10_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_0_10_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +  # Only significant points in color
+  geom_point(data = subset(res_0_10_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +  # Non-significant points in grey
+  scale_color_manual(values = c("Upregulated" = "#B7167E", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_linedraw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +  # Fold change thresholds
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # P-value threshold
+geom_text_repel(
+    data = subset(res_0_10_annotated, -log10(padj) > 50),  # Relaxed threshold
+    aes(label = name_unique),         # Use the short_name column for labels
+    size = 3,                         # Increased font size
+    box.padding = 0.3,                # Increase spacing around labels
+    point.padding = 0.3,              # Increase spacing between points and labels
+    max.overlaps = 40,                # Allow more overlaps
+    segment.color = 'grey50',         # Color of lines connecting labels to points
+    segment.size = 0.5                # Thinner lines for better readability
+  )  + theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center the title
+  ) + coord_cartesian(xlim = c(-8, 8), ylim = c(-2, 250))
+
+
+plot_0_40 <- ggplot(res_0_40_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_0_40_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +  # Only significant points in color
+  geom_point(data = subset(res_0_40_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +  # Non-significant points in grey
+  scale_color_manual(values = c("Upregulated" = "#B7167E", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_linedraw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +  # Fold change thresholds
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # P-value threshold
+geom_text_repel(
+    data = subset(res_0_40_annotated, -log10(padj) > 50),  # Relaxed threshold
+    aes(label = name_unique),         # Use the short_name column for labels
+    size = 3,                         # Increased font size
+    box.padding = 0.3,                # Increase spacing around labels
+    point.padding = 0.3,              # Increase spacing between points and labels
+    max.overlaps = 50,                # Allow more overlaps
+    segment.color = 'grey50',         # Color of lines connecting labels to points
+    segment.size = 0.5                # Thinner lines for better readability
+  )  + theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center the title
+  ) + coord_cartesian(xlim = c(-8, 8), ylim = c(-2, 250))
+
+plot_0_70 <- ggplot(res_0_70_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_0_70_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +  # Only significant points in color
+  geom_point(data = subset(res_0_70_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +  # Non-significant points in grey
+  scale_color_manual(values = c("Upregulated" = "#B7167E", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_linedraw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +  # Fold change thresholds
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # P-value threshold
+ geom_text_repel(
+    data = subset(res_0_70_annotated, -log10(padj) > 50),  # Relaxed threshold
+    aes(label = name_unique),         # Use the short_name column for labels
+    size = 3,                         # Increased font size
+    box.padding = 0.3,                # Increase spacing around labels
+    point.padding = 0.3,              # Increase spacing between points and labels
+    max.overlaps = 20,                # Allow more overlaps
+    segment.color = 'grey50',         # Color of lines connecting labels to points
+    segment.size = 0.5                # Thinner lines for better readability
+  )  + theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center the title
+  ) + coord_cartesian(xlim = c(-8, 8), ylim = c(-2, 250))
+
+
+plot_0_110 <- ggplot(res_0_110_annotated, aes(x = log2FoldChange, y = -log10(padj), color = Regulation)) +
+  geom_point(data = subset(res_0_110_annotated, padj < 0.05 & abs(log2FoldChange) > 1), alpha = 0.8, size = 1.5) +  # Only significant points in color
+  geom_point(data = subset(res_0_110_annotated, padj >= 0.05 | abs(log2FoldChange) <= 1), color = "grey", size = 1.5) +  # Non-significant points in grey
+  scale_color_manual(values = c("Upregulated" = "#B7167E", "Downregulated" = "blue", "Not Significant" = "grey")) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-Log10 Adjusted P-value"
+  ) +
+  theme_linedraw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +  # Fold change thresholds
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # P-value threshold
+geom_text_repel(
+    data = subset(res_0_110_annotated, -log10(padj) > 50),  # Relaxed threshold
+    aes(label = name_unique),         # Use the short_name column for labels
+    size = 3,                         # Increased font size
+    box.padding = 0.3,                # Increase spacing around labels
+    point.padding = 0.3,              # Increase spacing between points and labels
+    max.overlaps = 25,                # Allow more overlaps
+    segment.color = 'grey50',         # Color of lines connecting labels to points
+    segment.size = 0.5                # Thinner lines for better readability
+  )  + theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Center the title
+  ) + coord_cartesian(xlim = c(-8, 8), ylim = c(-2, 250))
+
+
+
+final_plot <- plot_0_10 + plot_0_40 + plot_0_70 + 
+              plot_0_110 + plot_layout(guides = "collect", ncol = 2) +
+              plot_annotation(tag_levels = 'A')
+ggsave("Fig5_Phagetreated_TPdefault0.png", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+ggsave("Fig5_Phagetreated_TPdefault0.pdf", plot = final_plot, width = 13, height = 10, dpi = 300)
+
+
+
+```
+
+
+```{r tracking all DEGs on same graph :/}
+
+# Get normalized counts and filter for DEGs
+norm_counts <- counts(dds, normalized = TRUE) %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "gene_id") %>%
+  filter(gene_id %in% degs)  # Only include DEGs
+
+
+```
+
+
