@@ -1,0 +1,344 @@
+---
+title: "KB Testing from SBP2@2 Resistant Strains"
+author: "Script by Alisha Monsibais"
+date: '2024-01-31'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# Project Summary 
+B28B was subjected to eiether SBP2@2 at an MOI of 10 or SM as a control and starting OD600 of 0.3?. Culters were incubated on a shaker at ~200 rpm at 37C for 48 hours and bacteria was taken at the following times: 0m, 10m, 40m, 70m, 110m, 5h, 12h, 24h, 48h. Bacteria was streaked on to a petri plate and incubated for 20 hours. 
+
+Single colonies were grown up in BHI ON then reset at a 1:20 dilution to achieve log phase bacteria at an OD600 of 0.1. Bacteria was swabed onto a petri plate and 5 antibiotic disk placed. Plates were incubated at 37C for 20 hours.  
+
+The goal of this project is to track the bacteria physiology trade offs of phage resistance and when phage resistance occurs. 
+
+Date:2/28/24
+
+## 1. Exploratory Data Analysis 
+```{r loading packages, message=FALSE, warning=FALSE, include=FALSE}
+library(knitr) #nice table output 
+library(tidyverse)
+library(reshape2) #helps melt data - data wrangling 
+library(ggpubr)
+library(dplyr)
+library(gcplyr) #AUC function 
+library(ez)
+#https://cran.r-project.org/web/packages/gcplyr/vignettes/gc01_gcplyr.pdf
+
+```
+
+```{r loading in data}
+KB_repp <- read.csv("230811_Rep_prelim/230810_KB_measurements.csv")
+KB_rep1 <- read.csv("240802_Rep_1/240802_KB_measurements.csv")
+KB_rep2 <- read.csv("240816_Rep_2/240816_KB_measurements_wrepeats.csv")
+```
+
+
+```{r AUC Plate}
+
+#plate 1
+#Group by the "Well" variable and calculate AUC for each group
+Results1 <- KB_rep1 %>% 
+  mutate(measurement.mm = measurement * 10) %>%
+  group_by(Condition, Timepoint, antibiotic) %>%
+  mutate(Timepoint = as.numeric(as.character(Timepoint))) %>%
+  select(Condition, Timepoint, antibiotic, measurement, measurement.mm) %>%
+  mutate(Rep = 1) %>%
+  filter(Timepoint != "1080")
+
+Results2 <- KB_rep2 %>% 
+  mutate(measurement.mm = measurement * 10) %>%
+  group_by(Condition, Timepoint, antibiotic) %>%
+  mutate(Timepoint = as.numeric(as.character(Timepoint))) %>%
+   select(Condition, Timepoint, antibiotic, measurement, measurement.mm) %>%
+  mutate(Rep =2) %>%
+  filter(Timepoint != "1080")
+
+Results3 <- KB_repp %>% 
+  mutate(measurement.mm = measurement * 10) %>%
+  group_by(Condition, Timepoint, antibiotic) %>%
+  mutate(Timepoint = as.numeric(as.character(Timepoint))) %>%
+  filter(Rep == "1") %>%
+  select(Condition, Timepoint, antibiotic, measurement, measurement.mm) %>%
+  mutate(Rep = 3) %>%
+  filter(Timepoint != "720") %>%
+  filter(Timepoint != "2880")
+
+
+plate1 <- ggplot(data = Results1, aes(x = measurement.mm, y = antibiotic, fill = Condition)) +
+  geom_col(position = position_dodge()) +  # Adjust width as needed
+  scale_fill_manual(values = c("black", "#B7167E") ) +  # Add manual fill colors
+  facet_grid(Timepoint~.) +
+  labs(title = "Antibiotic Sensitivity - Prelim Rep", x = "ZOI (mm)", y = "Antibiotic") +
+  theme_linedraw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        axis.text.x = element_text(color = "black", size = 8),
+        axis.text.y = element_text(color = "black", size = 8),
+        axis.title.x = element_text(color = "black", size = 8, face="bold"), 
+        axis.title.y = element_text(color = "black", size = 8, face="bold"))
+
+plate2 <- ggplot(data = Results2, aes(x = measurement.mm, y = antibiotic, fill = Condition)) +
+  geom_col(position = position_dodge()) +  # Adjust width as needed
+  scale_fill_manual(values = c("black", "#B7167E") ) +  # Add manual fill colors
+  facet_grid(Timepoint~.) +
+  labs(title = "Antibiotic Sensitivity - Rep1", x = "ZOI (mm)", y = "Antibiotic") +
+  theme_linedraw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        axis.text.x = element_text(color = "black", size = 8),
+        axis.text.y = element_text(color = "black", size = 8),
+        axis.title.x = element_text(color = "black", size = 8, face="bold"), 
+        axis.title.y = element_text(color = "black", size = 8, face="bold"))
+
+plate3 <- ggplot(data = Results3, aes(x = measurement.mm, y = antibiotic, fill = Condition)) +
+  geom_col(position = position_dodge()) +  # Adjust width as needed
+  scale_fill_manual(values = c("black", "#B7167E") ) +  # Add manual fill colors
+  facet_grid(Timepoint~.) +
+  labs(title = "Antibiotic Sensitivity - Rep2", x = "ZOI (mm)", y = "Antibiotic") +
+  theme_linedraw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        axis.text.x = element_text(color = "black", size = 8),
+        axis.text.y = element_text(color = "black", size = 8),
+        axis.title.x = element_text(color = "black", size = 8, face="bold"), 
+        axis.title.y = element_text(color = "black", size = 8, face="bold"))
+
+
+png('KB_Overview.png', units="in", width=10, height=5, res=600)
+KB_overview <- ggarrange(plate1, plate2, plate3,
+                      labels = c("A", "B", "C"),
+                      ncol = 4, nrow = 1, 
+                      common.legend = TRUE, legend = "right")
+KB_overview
+dev.off()
+
+```
+
+
+```{r Averages}
+Alldata <- Results1 %>% union(Results2) %>% union(Results3) %>%
+  group_by(Condition, Timepoint, antibiotic) %>%
+  summarise(n = length(measurement.mm), Median = median(measurement.mm), Average = mean(measurement.mm), SD =   sd(measurement.mm), SE = sd(measurement.mm)/sqrt(length((measurement.mm))))
+
+Alldata <- Alldata %>%
+  filter(Timepoint %in% c("0", "10", "40", "70", "110")) %>%
+  mutate(Timepoint = paste0(Timepoint, " mins \nPI")) %>%
+  mutate(Timepoint = factor(Timepoint, levels = c("0 mins \nPI", "10 mins \nPI", "40 mins \nPI", "70 mins \nPI", "110 mins \nPI"))) %>%
+  mutate(Condition = str_replace(Condition, "SBP22", "SBP2Φ2 Exposed")) %>%
+  mutate(Condition = str_replace(Condition, "B28B", "Bacterial Control"))
+
+
+
+Averages <- ggplot(data =Alldata, aes(x = Average, y = antibiotic, fill = Condition)) +
+  geom_col(position = position_dodge()) +  # Adjust width as needed
+    geom_errorbar(aes(xmin = Average - SD, xmax = Average + SD),
+                position = position_dodge()) +  # Adjust width as needed
+  scale_fill_manual(values = c("black", "#B7167E") ) +  # Add manual fill colors
+  facet_grid(Timepoint~.) +
+  labs( x = "ZOI (mm)", y = "Antibiotic") +
+  xlim(0,40) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(color = "black", size = 10),
+        axis.text.y = element_text(color = "black", size = 10),
+        axis.title.x = element_text(color = "black", size = 10, face="bold"), 
+        axis.title.y = element_text(color = "black", size = 10, face="bold"), 
+        strip.text.y = element_text(face = "bold", size = 10), 
+         legend.position = "bottom")
+
+ggsave("Fig6a_KB_Avgs.pdf", plot = Averages, width = 6, height = 8, dpi = 300)
+ggsave("Fig6a_Kb_Avgs.png", plot = Averages, width = 6, height = 8, dpi = 300)
+
+
+```
+```{r Spliting up the data}
+Alldata <- Results1 %>% union(Results2) %>% union(Results3)
+
+
+#subsetting data 
+
+subset_data_0_caz <- Alldata %>% filter(antibiotic == "caz", Timepoint == 0)
+subset_data_0_mem <- Alldata %>% filter(antibiotic == "mem", Timepoint == 0)
+subset_data_0_mh <- Alldata %>% filter(antibiotic == "mh", Timepoint == 0)
+subset_data_0_lev <- Alldata %>% filter(antibiotic == "lev", Timepoint == 0)
+subset_data_0_sxt <- Alldata %>% filter(antibiotic == "sxt", Timepoint == 0)
+
+subset_data_10_caz <- Alldata %>% filter(antibiotic == "caz", Timepoint == 10)
+subset_data_10_mem <- Alldata %>% filter(antibiotic == "mem", Timepoint == 10)
+subset_data_10_mh <- Alldata %>% filter(antibiotic == "mh", Timepoint == 10)
+subset_data_10_lev <- Alldata %>% filter(antibiotic == "lev", Timepoint == 10)
+subset_data_10_sxt <- Alldata %>% filter(antibiotic == "sxt", Timepoint == 10)
+
+subset_data_40_caz <- Alldata %>% filter(antibiotic == "caz", Timepoint == 40)
+subset_data_40_mem <- Alldata %>% filter(antibiotic == "mem", Timepoint == 40)
+subset_data_40_mh <- Alldata %>% filter(antibiotic == "mh", Timepoint == 40)
+subset_data_40_lev <- Alldata %>% filter(antibiotic == "lev", Timepoint == 40)
+subset_data_40_sxt <- Alldata %>% filter(antibiotic == "sxt", Timepoint == 40)
+
+subset_data_70_caz <- Alldata %>% filter(antibiotic == "caz", Timepoint == 70)
+subset_data_70_mem <- Alldata %>% filter(antibiotic == "mem", Timepoint == 70)
+subset_data_70_mh <- Alldata %>% filter(antibiotic == "mh", Timepoint == 70)
+subset_data_70_lev <- Alldata %>% filter(antibiotic == "lev", Timepoint == 70)
+subset_data_70_sxt <- Alldata %>% filter(antibiotic == "sxt", Timepoint == 70)
+
+subset_data_110_caz <- Alldata %>% filter(antibiotic == "caz", Timepoint == 110)
+subset_data_110_mem <- Alldata %>% filter(antibiotic == "mem", Timepoint == 110)
+subset_data_110_mh <- Alldata %>% filter(antibiotic == "mh", Timepoint == 110)
+subset_data_110_lev <- Alldata %>% filter(antibiotic == "lev", Timepoint == 110)
+subset_data_110_sxt <- Alldata %>% filter(antibiotic == "sxt", Timepoint == 110)
+
+shapiro.test(subset_data_0_caz$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_0_caz)
+
+shapiro.test(subset_data_0_mem$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_0_mem)
+
+shapiro.test(subset_data_0_mh$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_0_mh)
+
+shapiro.test(subset_data_0_lev$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_0_lev)
+
+shapiro.test(subset_data_0_sxt$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_0_sxt)
+#timepoint 0 is normally distributed when subsetted by antibiotics
+
+
+results_0 <- Alldata %>% filter(Timepoint == "0") %>%
+  group_by(antibiotic) %>%
+  summarise(
+    t_test_p_value = t.test(measurement.mm ~ Condition, var.equal = TRUE)$p.value,
+    .groups = "drop"
+  ) %>% mutate(fdr_corrected_p = p.adjust(t_test_p_value, method = "fdr"))  %>%
+  mutate(t = 0)
+
+
+shapiro.test(subset_data_10_caz$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_10_caz)
+
+shapiro.test(subset_data_10_mem$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_10_mem)
+
+shapiro.test(subset_data_10_mh$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_10_mh)
+
+shapiro.test(subset_data_10_lev$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_10_lev)
+
+shapiro.test(subset_data_10_sxt$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_10_sxt)
+#timepoint 10 is normally distributed when subsetted by antibiotics
+
+results_10 <- Alldata %>% filter(Timepoint == "10") %>%
+  group_by(antibiotic) %>%
+  summarise(
+    t_test_p_value = t.test(measurement.mm ~ Condition, var.equal = TRUE)$p.value,
+    .groups = "drop"
+  ) %>% mutate(fdr_corrected_p = p.adjust(t_test_p_value, method = "fdr"))  %>%
+  mutate(t = 10)
+
+shapiro.test(subset_data_40_caz$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_40_caz)
+
+shapiro.test(subset_data_40_mem$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_40_mem)
+#data is not normally distributed
+
+shapiro.test(subset_data_40_mh$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_40_mh)
+
+shapiro.test(subset_data_40_lev$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_40_lev)
+
+shapiro.test(subset_data_40_sxt$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_40_sxt)
+#timepoint 10 is normally distributed when subsetted by antibiotics
+
+results_40 <- Alldata %>% filter(Timepoint == "40") %>% filter(antibiotic != "mem") %>%
+  group_by(antibiotic) %>%
+  summarise(
+    t_test_p_value = t.test(measurement.mm ~ Condition, var.equal = TRUE)$p.value,
+    .groups = "drop"
+  ) %>% mutate(fdr_corrected_p = p.adjust(t_test_p_value, method = "fdr"))  %>%
+  mutate(t = 40)
+
+wilcox.test(measurement.mm ~ Condition, data = subset_data_40_mem)
+
+shapiro.test(subset_data_70_caz$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_70_caz)
+
+shapiro.test(subset_data_70_mem$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_70_mem)
+
+shapiro.test(subset_data_70_mh$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_70_mh)
+
+shapiro.test(subset_data_70_lev$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_70_lev)
+
+shapiro.test(subset_data_70_sxt$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_70_sxt)
+
+
+results_70 <- Alldata %>% filter(Timepoint == "70") %>%
+  group_by(antibiotic) %>%
+  summarise(
+    t_test_p_value = t.test(measurement.mm ~ Condition, var.equal = TRUE)$p.value,
+    .groups = "drop"
+  ) %>% mutate(fdr_corrected_p = p.adjust(t_test_p_value, method = "fdr"))  %>%
+  mutate(t = 70)
+
+
+shapiro.test(subset_data_110_caz$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_110_caz)
+
+shapiro.test(subset_data_110_mem$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_110_mem)
+#data is not normally distributed
+
+shapiro.test(subset_data_110_mh$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_110_mh)
+
+shapiro.test(subset_data_110_lev$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_110_lev)
+
+shapiro.test(subset_data_110_sxt$measurement.mm)
+leveneTest(measurement.mm ~ Condition, data = subset_data_110_sxt)
+
+
+results_110 <- Alldata %>% filter(Timepoint == "110") %>%
+  group_by(antibiotic) %>%
+  summarise(
+    t_test_p_value = t.test(measurement.mm ~ Condition, var.equal = TRUE)$p.value,
+    .groups = "drop"
+  ) %>% mutate(fdr_corrected_p = p.adjust(t_test_p_value, method = "fdr")) %>%
+  mutate(t = 110)
+
+wilcox.test(measurement.mm ~ Condition, data = subset_data_70_mem)
+
+
+stats <- results_0 %>% union(results_10) %>% union(results_40) %>% union(results_70) %>% union(results_110)
+
+write.csv(stats, "stats_results.csv", row.names = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
