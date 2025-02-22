@@ -1,0 +1,71 @@
+---
+title: "Coverage_depth"
+author: "Alisha Monsibais"
+date: '2023-07-14'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+
+library("ggplot2")
+library(ggpubr)
+```
+
+## Project
+This script was written for coverage depth. Clean reads are mapped tobacterial genome to determine the coverage depth of the entire genome. 
+
+```{r data import}
+
+coverage_data_short <- read.delim("short/B28B_trycycler.depth.txt", header = FALSE)
+coverage_data_long <- read.delim("long/B28B_trycycler.depth.txt", header = FALSE)
+
+
+B28B_short <- ggplot(coverage_data_short, aes(x=V2, y=V3))+
+  ggtitle("B28B Trycycler Genome - Short Cleaned Reads") +
+  geom_col(color = "azure4") +
+  labs(x = NULL,y ="Reads per Base") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size=13, hjust = 0.5, face="bold"),
+    axis.title.x = element_text(size=10, face="bold"),
+    axis.title.y = element_text(size=10, face="bold"), 
+    axis.text.x = element_text(size=10), 
+    axis.text.y = element_text(size=10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+B28B_short
+
+B28B_long <- ggplot(coverage_data_long, aes(x=V2, y=V3))+
+  ggtitle("B28B Trycycler Genome - Long Cleaned Reads") +
+  geom_col(color = "azure4") +
+  labs(x = NULL,y ="Reads per Base") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size=13, hjust = 0.5, face="bold"),
+    axis.title.x = element_text(size=10, face="bold"),
+    axis.title.y = element_text(size=10, face="bold"), 
+    axis.text.x = element_text(size=10), 
+    axis.text.y = element_text(size=10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+B28B_long
+
+png("Coverage_B28B_Manuscript2.png", units="in", width=7, height=9, res=600)
+cov <- ggarrange(ANB28_host, KB824_host, SBP2.2_host, 
+                      labels = c("A", "B"),
+                      align = c("v"),
+                      font.label = list(size = 10),
+                      ncol = 1, nrow = 2, 
+                      label.x = -0.01,
+                      label.y = 1.001)
+
+cov
+dev.off()
+
+```
+
+
+
